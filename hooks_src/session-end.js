@@ -230,22 +230,38 @@ function logSessionCost(event) {
  * Non-critical -- wrapped in try/catch.
  */
 function incrementTrustCounters() {
+  // trust counters write to trust.json (user state). harness.json (committed
+  // config) keeps only `trust.override` if set, never the counters.
   try {
     const configPath = path.join(PROJECT_ROOT, '.claude', 'harness.json');
+    const trustPath = path.join(PROJECT_ROOT, '.claude', 'trust.json');
     if (!fs.existsSync(configPath)) return; // trust isn't tracked without config
 
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    if (!config.trust) {
-      config.trust = {
-        sessions_completed: 0,
-        campaigns_completed: 0,
-        campaigns_reverted: 0,
-        fleet_clean_merges: 0,
-        improve_loops_accepted: 0,
-        daemon_runs: 0,
-        override: null,
-      };
+    // Load existing counters (prefer trust.json; migrate from harness.json once).
+    let counters = {};
+    if (fs.existsSync(trustPath)) {
+      try { counters = JSON.parse(fs.readFileSync(trustPath, 'utf8')); } catch { /* start fresh */ }
+    } else {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (cfg.trust) {
+          // Carry counters from old location, leave override behind in harness.json.
+          const { override, ...legacyCounters } = cfg.trust;
+          counters = legacyCounters;
+        }
+      } catch { /* start fresh */ }
     }
+
+    const config = {
+      trust: {
+        sessions_completed: counters.sessions_completed || 0,
+        campaigns_completed: counters.campaigns_completed || 0,
+        campaigns_reverted: counters.campaigns_reverted || 0,
+        fleet_clean_merges: counters.fleet_clean_merges || 0,
+        improve_loops_accepted: counters.improve_loops_accepted || 0,
+        daemon_runs: counters.daemon_runs || 0,
+      },
+    };
 
     // Always increment sessions_completed
     config.trust.sessions_completed = (config.trust.sessions_completed || 0) + 1;
@@ -319,7 +335,29 @@ function incrementTrustCounters() {
       }
     }
 
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+    fs.writeFileSync(trustPath, JSON.stringify(config.trust, null, 2) + '\n', 'utf8');
+
+    // One-time migration: strip trust counters from harness.json, preserve override.
+    try {
+      const harness = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (harness.trust) {
+        const counterKeys = ['sessions_completed', 'campaigns_completed', 'campaigns_reverted',
+                             'fleet_clean_merges', 'improve_loops_accepted', 'daemon_runs',
+                             'sessionCount', 'campaignCount', 'level'];
+        let dirty = false;
+        for (const k of counterKeys) {
+          if (k in harness.trust) { delete harness.trust[k]; dirty = true; }
+        }
+        // If only override remains (or nothing), drop the empty/override-only object cleanly
+        if (Object.keys(harness.trust).length === 0) {
+          delete harness.trust;
+          dirty = true;
+        }
+        if (dirty) {
+          fs.writeFileSync(configPath, JSON.stringify(harness, null, 2) + '\n', 'utf8');
+        }
+      }
+    } catch { /* harness.json cleanup is best-effort */ }
   } catch { /* non-critical -- never block session end */ }
 }
 

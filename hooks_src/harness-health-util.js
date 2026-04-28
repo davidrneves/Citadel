@@ -21,6 +21,8 @@ const AUDIT_LOG_FILE = path.join(TELEMETRY_DIR, 'audit.jsonl');
  * Falls back to .claude/ in the project root for backward compatibility.
  */
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(PROJECT_ROOT, '.claude');
+const CONSENT_PATH = path.join(PROJECT_ROOT, '.claude', 'consent.json');
+const TRUST_PATH = path.join(PROJECT_ROOT, '.claude', 'trust.json');
 
 /**
  * Ensure telemetry directory exists.
@@ -245,7 +247,18 @@ function readTrustLevel() {
     daemon_runs: 0,
     override: null,
   };
-  const trust = { ...defaults, ...(config.trust || {}) };
+  // Counters live in trust.json (user state). override lives in harness.json
+  // (project policy). Fall back to harness.json.trust for old installs.
+  let counters = {};
+  try {
+    if (fs.existsSync(TRUST_PATH)) {
+      counters = JSON.parse(fs.readFileSync(TRUST_PATH, 'utf8'));
+    }
+  } catch { /* fall through to legacy */ }
+  const harnessTrust = config.trust || {};
+  const trust = { ...defaults, ...harnessTrust, ...counters };
+  // Preserve override from harness.json even if counters override defaults
+  if (harnessTrust.override) trust.override = harnessTrust.override;
 
   // Explicit override takes priority
   const validOverrides = ['novice', 'familiar', 'trusted'];
@@ -366,9 +379,18 @@ const CONSENT_CATEGORIES = ['externalActions', 'daemonSpend', 'fleetSpawn'];
  * @returns {'always-ask'|'session-allow'|'auto-allow'|null} null = first encounter
  */
 function readConsent(category) {
-  const config = readConfig();
-  const consent = config.consent || {};
-  const pref = consent[category] || null;
+  // Prefer dedicated consent.json. Fall back to harness.json for backward compat.
+  let pref = null;
+  try {
+    if (fs.existsSync(CONSENT_PATH)) {
+      const data = JSON.parse(fs.readFileSync(CONSENT_PATH, 'utf8'));
+      pref = data[category] || null;
+    }
+  } catch { /* fall through to legacy location */ }
+  if (!pref) {
+    const config = readConfig();
+    pref = (config.consent || {})[category] || null;
+  }
   if (!pref) return null;
   if (!['always-ask', 'session-allow', 'auto-allow'].includes(pref)) return null;
   return pref;
@@ -381,20 +403,31 @@ function readConsent(category) {
  * @param {'always-ask'|'session-allow'|'auto-allow'} preference
  */
 function writeConsent(category, preference) {
-  const configPath = path.join(PROJECT_ROOT, '.claude', 'harness.json');
-  let config = {};
+  // Write to dedicated consent.json so harness.json (committed config) stays clean.
+  let consent = {};
   try {
-    if (fs.existsSync(configPath)) {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (fs.existsSync(CONSENT_PATH)) {
+      consent = JSON.parse(fs.readFileSync(CONSENT_PATH, 'utf8'));
     }
   } catch { /* start fresh */ }
+  consent[category] = preference;
 
-  if (!config.consent) config.consent = {};
-  config.consent[category] = preference;
-
-  const dir = path.dirname(configPath);
+  const dir = path.dirname(CONSENT_PATH);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  fs.writeFileSync(CONSENT_PATH, JSON.stringify(consent, null, 2) + '\n');
+
+  // One-time migration: strip stale "consent" key from harness.json if present.
+  // Older versions wrote here; this keeps committed config from drifting dirty.
+  const harnessPath = path.join(PROJECT_ROOT, '.claude', 'harness.json');
+  try {
+    if (fs.existsSync(harnessPath)) {
+      const config = JSON.parse(fs.readFileSync(harnessPath, 'utf8'));
+      if (config.consent) {
+        delete config.consent;
+        fs.writeFileSync(harnessPath, JSON.stringify(config, null, 2) + '\n');
+      }
+    }
+  } catch { /* harness.json cleanup is best-effort */ }
 }
 
 /**
