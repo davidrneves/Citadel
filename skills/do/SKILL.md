@@ -130,6 +130,7 @@ and any project-level custom skills in `.claude/skills/`.
 | "setup", "first run", "configure harness" | `/setup` |
 | "research", "investigate", "look into", "find out" | `/research` |
 | "experiment", "optimize", "try", "A/B", "measure" | `/experiment` |
+| "ui bug", "css bug", "layout broken", "visual bug", "render issue", "not rendering", "wrong style", "ui regression", "memory leak ui", "slow ui", "janky", "flickering" | `/web-ui-debug` |
 | "debug", "root cause", "diagnose", "why is", "investigate bug" | `/systematic-debugging` |
 | "research fleet", "parallel research", "multi-angle research", "compare options" | `/research-fleet` |
 | "preview", "screenshot", "visual check", "does it render" | `/live-preview` |
