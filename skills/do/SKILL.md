@@ -125,7 +125,7 @@ and any project-level custom skills in `.claude/skills/`.
 | "handoff", "session summary" | `/session-handoff` |
 | "orchestrate", "chain skills", "multi-step" | `/marshal` |
 | "campaign", "multi-session", "phases" | `/archon` |
-| "parallel", "simultaneous", "multiple agents" | `/fleet` |
+| "parallel", "simultaneous", "multiple agents", "at the same time", "both ... and" | `/fleet --quick` |
 | "intake", "process pending", "pipeline" | `/autopilot` |
 | "setup", "first run", "configure harness" | `/setup` |
 | "research", "investigate", "look into", "find out" | `/research` |
@@ -140,6 +140,7 @@ and any project-level custom skills in `.claude/skills/`.
 | "triage", "open issues", "unlabeled issues", "review pr", "review prs", "investigate issue" | `/triage` |
 | "watch pr", "watch ci", "monitor pr", "fix ci", "ci failing", "pr failing", "auto-fix", "auto fix pr", "pr is red", "checks failing" | `/pr-watch` |
 | "dashboard", "what's happening", "what's going on", "show activity", "harness state", "show me status" | `/dashboard` |
+| "telemetry", "what did this cost", "session cost", "how much did that cost", "how much have I spent", "what hooks fired", "trust level", "show me telemetry", "spending", "session stats", "what telemetry" | `/telemetry` |
 | "learn", "extract patterns", "learn from that", "save what worked", "patterns from campaign" | `/learn` |
 | "schedule", "recurring", "every N minutes", "cron", "set a reminder", "run periodically" | `/schedule` |
 | "merge review", "check merges", "any conflicts", "fleet conflicts", "pending branches", "safe to merge" | `/merge-review` |
@@ -212,6 +213,38 @@ After classification and before execution, verify the response is proportional t
 |---|---|
 | Input complexity >= 4 AND routed to a bare skill | Suggest Marshal. "This looks complex enough for orchestration. Route to /marshal instead?" |
 | Input mentions "overnight" or "continuous" AND routed to Archon | Suggest daemon. "This sounds like continuous work. Want to run it as a daemon?" (skip if Novice) |
+| Input contains 2+ clearly independent tasks AND complexity >= 3 | Run Fleet auto-decomposition (see below). |
+
+**Fleet auto-decomposition — 1/2/3 confirmation prompt:**
+
+When `/do` detects two or more tasks with non-overlapping file scopes and complexity >= 3,
+check the stored Fleet preference before routing:
+
+Read `consent.fleetSpawn` from harness.json via `readConsent('fleetSpawn')`:
+- `auto-allow` → skip prompt, route directly to `/fleet --quick`
+- `always-ask` or `null` (first encounter) → show the prompt below
+
+```
+These look independent — I could run them in parallel:
+  1. {task A description}
+  2. {task B description}
+
+Run in parallel? [1=yes  2=always  3=no]
+```
+
+Handle the response:
+- **1 (yes once):** Route to `/fleet --quick`. Preference unchanged.
+- **2 (always):** Route to `/fleet --quick`. Write preference: `writeConsent('fleetSpawn', 'auto-allow')`.
+- **3 (no):** Run sequentially. If user adds "don't ask again", write `writeConsent('fleetSpawn', 'always-ask')`.
+
+`readConsent` and `writeConsent` are in `hooks_src/harness-health-util.js`. Import them via
+`require('../hooks_src/harness-health-util')` when running as a Node script, or reference
+them conceptually when routing as an LLM skill (use `node -e "..."` to read/write via Bash).
+
+This check only fires when:
+- Two or more independent tasks detected (different files/domains)
+- Complexity is 3+ (not trivial single-step work)
+- Not already routed to full Fleet (complexity 4+)
 
 **Trust level integration:**
 Read trust level from `harness.json` (via the `trust` object):

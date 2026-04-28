@@ -14,6 +14,49 @@ last-updated: 2026-03-28
 
 # /daemon -- Continuous Autonomous Operation
 
+## Default execution path (READ FIRST)
+
+**`/daemon start` does NOT call `RemoteTrigger` by default.** The local
+runner is the default. Only pass `--remote` to use Anthropic's routine
+system, and only after explicit user confirmation.
+
+**Why:** `RemoteTrigger` counts against the account-wide **15 routine runs /
+24h** cap. A single overnight run can exhaust the quota and pause every other
+routine on the account (including unrelated ones). See
+[docs/ROUTINE-QUOTA.md](../../docs/ROUTINE-QUOTA.md).
+
+### Default flow — `/daemon start` (no `--remote` flag)
+1. Do Steps 1, 2, and 4 below (validate, check existing, write `daemon.json`).
+2. **Skip Step 3** — do NOT create any `RemoteTrigger`. Leave `chainTriggerId`
+   and `watchdogTriggerId` as `null` in the state file.
+3. Instead of Step 5's trigger-confirmation, output:
+   ```
+   Daemon state created: .planning/daemon.json
+     Campaign:  {slug}
+     Budget:    ${N}
+
+   To start the tick loop, run in a separate terminal:
+     npm run daemon:local
+
+   Leave that terminal open. It spawns `claude -p "/do continue"` each
+   session, respects daemon.json status, and consumes zero Anthropic
+   routine quota. Stop with Ctrl+C or `/daemon stop`.
+
+   For true unattended background operation (machine sleeps, user away):
+     /daemon start --remote    (uses RemoteTrigger, counts against 15/day cap)
+   ```
+
+### Opt-in routine flow — `/daemon start --remote`
+Only when the user has explicitly passed `--remote`:
+1. Before proceeding, confirm: "This will use Anthropic's `RemoteTrigger`,
+   which counts against your 15 routine runs / 24h quota. A single overnight
+   daemon can exhaust it. Continue? (y/N)"
+2. If the user confirms, run the full Step 1–5 protocol below (including
+   Step 3's trigger creation).
+
+The rest of the protocol in this file documents the full routine-path flow
+for reference and for `--remote` invocations.
+
 ## Identity
 
 You are the daemon controller. You turn campaign execution from "human starts
@@ -37,8 +80,9 @@ Do NOT use `/daemon` for:
 
 | Command | Behavior |
 |---|---|
-| `/daemon start` | Start continuous mode on the active campaign |
-| `/daemon start --campaign {slug}` | Start on a specific campaign |
+| `/daemon start` | Default: create state file, prompt user to run `npm run daemon:local` (zero routine cost) |
+| `/daemon start --remote` | Use `RemoteTrigger` instead (counts against 15/day routine quota — requires confirmation) |
+| `/daemon start --campaign {slug}` | Target a specific campaign |
 | `/daemon start --budget {N}` | Set budget cap in dollars (default: $50) |
 | `/daemon start --budget unlimited` | Explicitly disable budget cap |
 | `/daemon start --interval {N}m` | Set watchdog interval (default: 30m) |

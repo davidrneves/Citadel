@@ -83,6 +83,19 @@ Data source indicator:
 - For each entry: extract `ts` (or `timestamp`), `hook` (or `event`), and a
   short description field. Format as relative time.
 
+**Recent Hook Activity (separate from general telemetry):**
+- Read last 20 lines of `.planning/telemetry/hook-timing.jsonl`
+- For each entry with `event: "timing"`, extract:
+  - `hook` — which hook fired (e.g., `post-edit`, `circuit-breaker`)
+  - `duration_ms` — execution time in milliseconds
+  - `timestamp` — convert to relative time
+  - `outcome` — derive from context: if `duration_ms` is present and no matching
+    error entry in `hook-errors.jsonl`, outcome is `pass`; if a block entry exists
+    for the same hook within 1 second, outcome is `block`
+- For entries with `event: "counter"` (from `increment()`), extract metric name
+  as the "event" column with count context
+- This section makes silently-firing hooks visible without digging through raw files
+
 **Pending Queues:**
 - Count lines in `.planning/telemetry/doc-sync-queue.jsonl` (or 0 if missing)
 - Count lines in `.planning/telemetry/merge-check-queue.jsonl` (or 0 if missing)
@@ -104,6 +117,10 @@ Data source indicator:
 - Count total lines in `.planning/telemetry/audit.jsonl` written today
 - Count entries in `hooks` array of `.claude/hooks-template.json` (or
   `.claude/hooks.json` if template not present); use 0 if neither exists
+- Read `.claude/harness.json` → `trust` object:
+  - `sessions_completed`, `campaigns_completed` counters
+  - Compute level: novice (sessions < 5), familiar (5-19), trusted (20+ with 2+ campaigns)
+  - If `trust.override` is set, use that and note "(override)"
 
 ### Step 2: FORMAT RELATIVE TIMESTAMPS
 
@@ -156,6 +173,10 @@ RECENT ACTIVITY (last 10 events)
   {relative time} | {hook/event name} | {description}
   (no telemetry recorded yet)
 
+HOOK ACTIVITY (last 10 hook fires)
+  {relative time} | {hook name} | {duration_ms}ms | {outcome: pass/block/warn}
+  (no hook timing recorded yet — set CITADEL_DEBUG=true in settings.json for verbose output)
+
 PENDING
   Doc sync:     {N} items queued
   Merge reviews: {N} items queued
@@ -165,10 +186,12 @@ HEALTH
   Circuit breaker trips this session: {N}
   Audit entries today:                {N}
   Hooks installed:                    {N}
+  Trust level:                        {novice | familiar | trusted} ({N} sessions, {N} campaigns)
 
 QUICK COMMANDS
   /do continue    — resume active campaign
   /do rollback    — restore last checkpoint
+  /telemetry      — cost breakdown, hook activity, telemetry settings
   /triage prs     — review open PRs
   /pr-watch       — watch PR CI
   /learn          — extract patterns from last completed campaign

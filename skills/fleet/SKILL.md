@@ -41,6 +41,7 @@ Do NOT use Fleet for:
 | `/fleet [path-to-spec]` | Read a spec file, decompose into streams |
 | `/fleet continue` | Resume from the last fleet session file |
 | `/fleet` (no args) | Health diagnostic → work queue → execute |
+| `/fleet --quick [task1]; [task2]` | Lightweight parallel mode for solo devs — 2+ tasks, single wave, auto-merge, no session file |
 | `/fleet --speculative N [direction]` | Try N different approaches to the same task in parallel — see Speculative Mode below |
 
 ## Protocol
@@ -51,12 +52,29 @@ Do NOT use Fleet for:
 2. Check `.planning/campaigns/` for active campaigns
 3. Check `.planning/coordination/claims/` for external claims
 4. Determine input mode: directed, spec-driven, continuing, or undirected
+5. **Load prior session context**: If `.planning/momentum.json` exists, run
+   ```bash
+   node .citadel/scripts/momentum-read.cjs
+   ```
+   and read the output. Use the active scopes and recurring decisions to inform
+   work queue prioritization. Skip silently if the file is absent or output is empty.
 
-### Step 1b: LOG SESSION START
+> **Wave context restoration:** Use the Claude Code Compaction API to restore fleet
+> session context at the start of each session. Do NOT read `.claude/compact-state.json`
+> — that pattern is deprecated in favour of server-side compaction (available on Opus 4.6+).
+> Fleet session files (`.planning/fleet/session-{slug}.md`) remain the source of truth
+> for inter-wave discovery relay; compaction handles agent memory, not campaign state.
+> If the Compaction API is unavailable, fall back to reading the fleet session file's
+> Continuation State directly.
+
+### Step 1b: LOG SESSION START + START WATCHER
 
 ```bash
 node .citadel/scripts/telemetry-log.cjs --event campaign-start --agent fleet --session {session-slug}
+node .citadel/scripts/momentum-watch-start.cjs
 ```
+
+The watcher runs in the background and re-synthesizes `momentum.json` within 500ms of any new discovery write. This means parallel Fleet sessions in other terminals share discoveries in near-real-time rather than waiting for session end. Safe to call if already running — only one watcher runs per project.
 
 ### Step 2: WORK QUEUE
 
@@ -87,6 +105,12 @@ For each wave:
      `node scripts/map-index.js --query "<agent's scope keywords>" --max-files 15`
      and inject the results as a `=== MAP SLICE ===` block. If the index does
      not exist, skip silently.
+   - **Prior session context** (all waves): re-read `momentum.json` fresh at each
+     wave boundary via `node .citadel/scripts/momentum-read.cjs` and inject as a
+     `=== PRIOR SESSION CONTEXT ===` block. Re-reading (rather than reusing the
+     Step 1 snapshot) picks up discoveries written by parallel Fleet sessions in
+     other terminals while this session has been running. If the output is empty,
+     skip silently.
    - Campaign-specific direction and scope
    - Discovery briefs from previous waves (if any)
 
@@ -115,6 +139,23 @@ For each wave:
    - Extract HANDOFF blocks
    - Run `node .citadel/scripts/compress-discovery.cjs` on each output
    - Write compressed briefs to `.planning/fleet/briefs/`
+
+6b. **Write persistent discovery records** for each agent (cross-session memory):
+   ```bash
+   node .citadel/scripts/discovery-write.cjs \
+     --session {session-slug} \
+     --agent {agent-name} \
+     --wave {wave-number} \
+     --status {success|partial|failed} \
+     --scope "{comma-separated-scope-dirs}" \
+     --handoff "{json-array-of-handoff-items}" \
+     --decisions "{json-array-of-decisions}" \
+     --files "{json-array-of-files-touched}" \
+     --failures "{json-array-of-failures}"
+   ```
+   Extract the values from the compressed brief and HANDOFF block. This is the
+   cross-session layer — these records persist beyond this session and inform
+   future Fleet sessions via momentum.json.
 
 7. **Log wave complete**:
    ```bash
@@ -155,7 +196,24 @@ After all waves:
    ```bash
    node .citadel/scripts/telemetry-log.cjs --event campaign-complete --agent fleet --session {session-slug}
    ```
-5. Output final HANDOFF
+5. **Update momentum** (cross-session synthesis):
+   ```bash
+   node .citadel/scripts/momentum-synthesize.cjs
+   ```
+   This aggregates all discovery records from this and prior sessions into
+   `.planning/momentum.json`. Future sessions will read this at Step 1.
+5.5. **Propagate knowledge** — for each campaign that completed this session, run:
+   ```bash
+   npm run propagate -- --campaign {slug}
+   ```
+   Run once per completed campaign slug (not per wave). This appends a dated
+   "## Related Work" entry to related `.planning/knowledge/` files, ensuring
+   discoveries from parallel campaigns propagate to the knowledge base rather
+   than staying siloed in completed campaign files. If multiple campaigns
+   completed, run the command for each slug. If `npm run propagate` is
+   unavailable, note each slug in the fleet session file under
+   `## Pending Propagation` for the next session to catch up.
+6. Output final HANDOFF
 
 ## Fleet Session File Format
 
@@ -218,6 +276,21 @@ Also check `.planning/coordination/claims/` for external claims.
 - Reserve ~300K tokens for Fleet's own context
 - Typical: 2-3 agents per wave
 - If budget exceeded: reduce agents per wave
+
+**Effort hints for wave agents** (use the `effort` parameter, not `budget_tokens`):
+
+- **Fleet scouts** (research, mapping, audit tasks): `effort: medium`, ~100K tokens each
+- **Execution agents** (build, refactor, implement tasks): `effort: high`, ~250K tokens each
+- **Verify agents** (typecheck, visual-verify, QA): `effort: low`, ~60K tokens each
+
+Wave budget math: a 700K-token wave cap typically accommodates:
+- 7 scout agents (7 × 100K) — for broad research waves
+- 2–3 execution agents (2–3 × 250K) — for focused build waves
+- Mixed: 1 execution + 3–4 scouts when both discovery and building are needed
+
+The `effort` parameter is GA as of April 2026 and produces ~20–40% token reduction
+compared to manually tuned `budget_tokens` values. Always prefer `effort` for new
+wave definitions.
 
 ## Quality Gates
 
@@ -427,6 +500,61 @@ Winner: functional
 Merged: {ISO timestamp}
 ```
 
+## Quick Mode
+
+`/fleet --quick [task1]; [task2]; [task3]`
+
+Lightweight parallel execution for solo developers. Designed for the common case:
+"I need to do A and B and they don't touch the same files."
+
+### What's different from standard fleet
+
+| Property | Standard Fleet | Quick Mode |
+|---|---|---|
+| Min streams | 3 | 2 |
+| Min complexity | 4 | 3 |
+| Waves | Multi-wave with discovery relay | Single wave only |
+| Session file | Written to `.planning/fleet/` | Skipped — results reported inline |
+| Discovery briefs | Compressed to `.planning/fleet/briefs/` | Skipped |
+| Merge | Per-wave confirmation | Auto-merge if no conflicts |
+| Scope claim | Written to coordination/ | Skipped |
+
+### Protocol
+
+1. Parse tasks from the `--quick` argument (semicolon-separated)
+2. Validate scope overlap — if any two tasks touch the same files, merge them or sequence them
+3. Spawn all agents simultaneously with `isolation: "worktree"`
+4. Collect results; auto-merge worktrees if no conflicts detected
+5. If merge conflict: surface to user, offer manual resolution
+6. Report results inline — no session file written unless the user asks
+
+### When /do routes here
+
+`/do` routes to `--quick` mode (not standard fleet) when:
+- Input contains "at the same time", "simultaneously", "in parallel", "both ... and"
+- Two or more clearly independent tasks are detected
+- Complexity is 3 (moderate), not 4+ (complex)
+- User chose "1" (yes once) or "2" (always) on the Fleet confirmation prompt
+
+### Entry from /do confirmation prompt
+
+When `/do` detects independent parallel tasks, it shows:
+
+```
+These look independent — I could run them in parallel:
+  1. {task description}
+  2. {task description}
+
+Run in parallel? [1=yes  2=always  3=no]
+```
+
+- **1 (yes):** Run `--quick` once. Preference not saved.
+- **2 (always):** Run `--quick`. Save `fleetSpawn: auto-allow` to harness.json — future parallel suggestions auto-proceed.
+- **3 (no):** Run sequentially. Save `fleetSpawn: always-ask` to harness.json if user says "don't ask again".
+
+Preferences are stored under `consent.fleetSpawn` in harness.json using the existing
+consent machinery (`readConsent`/`writeConsent` from harness-health-util.js).
+
 ## Contextual Gates
 
 Before spawning agents, verify contextual appropriateness:
@@ -445,7 +573,8 @@ Red actions require explicit confirmation regardless of trust level.
 
 ### Proportionality
 Before spawning, check whether fleet is warranted:
-- If work queue has < 3 independent streams: downgrade to Marshal or Archon
+- **Standard fleet:** work queue requires 3+ independent streams. Fewer → downgrade to Marshal or Archon.
+- **Quick mode:** 2+ tasks with non-overlapping scopes. No minimum complexity gate.
 - If all streams touch the same directory: downgrade to sequential Archon phases
 - If estimated agents > 6: confirm with user (even trusted level)
 

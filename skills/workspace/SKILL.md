@@ -44,6 +44,14 @@ repo. You are the outer loop.
    b. Verify each repo path exists and is a git repo
    c. Read each repo's `CLAUDE.md` for conventions
    d. Check each repo's `.planning/campaigns/` for active campaigns (avoid collisions)
+4. **Load prior session context and start watcher**:
+   ```bash
+   node .citadel/scripts/momentum-watch-start.cjs
+   node .citadel/scripts/momentum-read.cjs
+   ```
+   Start the discovery watcher first (idempotent — safe if already running). Then
+   read momentum context and use active scopes and recurring decisions to inform
+   work queue prioritization across repos. Skip momentum injection if output is empty.
 
 ### Step 2: DECOMPOSE
 
@@ -148,6 +156,10 @@ For each repo-campaign in this wave:
    - **If simple (1-2 steps):** spawn as `/marshal` or direct skill
 4. Inject cross-repo context:
    - Discovery briefs from prior waves (same as fleet's discovery relay)
+   - **Prior session context** (all waves): re-read `momentum.json` fresh at each wave
+     boundary via `node .citadel/scripts/momentum-read.cjs` and inject as a
+     `=== PRIOR SESSION CONTEXT ===` block. Re-reading picks up discoveries written
+     by parallel sessions while this workspace has been running. Skip silently if empty.
    - Cross-repo contract specifications
    - Relevant sections of other repos' `CLAUDE.md` files
 5. Each agent runs in its own context (the target repo's working directory)
@@ -169,6 +181,19 @@ Discoveries from prior waves:
 - Wait for all campaigns in the wave to complete
 - Extract HANDOFF blocks from each
 - Compress into cross-repo discovery brief
+- **Write persistent discovery records** for each completed campaign:
+  ```bash
+  node .citadel/scripts/discovery-write.cjs \
+    --session {session-slug} \
+    --agent {repo-name}-{campaign-type} \
+    --wave {wave-number} \
+    --status {success|partial|failed} \
+    --scope "{repo-name}:{scope-path}" \
+    --handoff "{json-array-of-handoff-items}" \
+    --decisions "{json-array-of-decisions}" \
+    --files "{json-array-of-files-touched}" \
+    --failures "{json-array-of-failures}"
+  ```
 
 #### 4d. Discovery relay
 Write `workspace/briefs/wave{N}-{repo-name}.md` for each completed campaign.
@@ -203,7 +228,12 @@ When all waves complete:
    - Set `status: completed`, `completed_at: {ISO timestamp}`
    - Record final state of all campaigns
 
-3. **Branch summary:**
+3. **Update momentum** (cross-session synthesis):
+   ```bash
+   node .citadel/scripts/momentum-synthesize.cjs
+   ```
+
+4. **Branch summary:**
    List all branches created across repos so the user can review and merge:
    ```
    Branches ready for review:
