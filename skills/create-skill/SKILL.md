@@ -197,6 +197,19 @@ All of these must be true before the skill exits:
 - [ ] {Verifiable gate 2}
 - [ ] {Verifiable gate 3}
 
+## Expected Output
+
+{What does success look like? Describe the observable state that must exist
+when this skill completes correctly: which files exist, what they contain,
+what commands pass. Be concrete enough that a different session could
+verify completion without running the skill again.}
+
+## Hard Limits
+
+{What this skill must NEVER do. At least 2 explicit prohibitions derived
+from the failure modes identified in Step 1 (DISCOVER). Format as a
+bulleted list. Each limit must be testable: "never X" not "avoid X".}
+
 ## Exit Protocol
 
 Output a summary in this format:
@@ -300,11 +313,13 @@ The user must leave this conversation knowing three things:
 All of these must be true before the skill exits:
 
 - [ ] Three discovery questions were asked and answered by the user
-- [ ] Generated SKILL.md follows the exact format (frontmatter + 5 sections)
+- [ ] Generated SKILL.md follows the exact format (frontmatter + 7 sections)
 - [ ] Frontmatter has: name, description, user-invocable, trigger_keywords
 - [ ] Identity section is 2-4 sentences, second person, specific to this skill
 - [ ] Protocol steps are specific enough for a different AI session to follow
 - [ ] No steps contain vague directives ("review", "consider", "ensure quality")
+- [ ] Expected Output section describes observable success state (not vague intent)
+- [ ] Hard Limits section lists at least 2 explicit, testable prohibitions
 - [ ] Quality gates are all yes/no verifiable (no subjective judgment)
 - [ ] Trigger keywords do not conflict with existing skills
 - [ ] SKILL.md is under 500 lines
